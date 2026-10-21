@@ -1,0 +1,8 @@
+# Endpoint label format:
+#   {ip}:{port}/{ISO}/{CITY-SLUG}
+#
+# The suffix is a location label. The proxy itself is SOCKS5 at {ip}:{port}.
+# Generate the real values with:
+#   adguard-cli-proxy up US/LAS-VEGAS
+
+127.0.0.1:9111/US/LAS-VEGAS

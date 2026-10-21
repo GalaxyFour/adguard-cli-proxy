@@ -1,0 +1,19 @@
+[Unit]
+Description=adguard-cli-proxy (SOCKS5 via AdGuard VPN)
+Documentation=https://github.com/GalaxyFour/adguard-cli-proxy
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# Replace YOUR_USER with the account that is logged in to `adguardvpn-cli`.
+User=YOUR_USER
+Group=YOUR_USER
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/adguard-cli-proxy up US/LAS-VEGAS --host 127.0.0.1 --port 9111
+ExecStop=/usr/local/bin/adguard-cli-proxy down
+TimeoutStartSec=120
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target
