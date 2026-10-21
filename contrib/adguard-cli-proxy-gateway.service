@@ -1,0 +1,15 @@
+[Unit]
+Description=adguard-cli-proxy location gateway (port 9111)
+Documentation=https://github.com/GalaxyFour/adguard-cli-proxy
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/adguard-cli-proxy gateway --host 127.0.0.1 --port 9111 --min-port 9112 --max-port 9222 --default-location US/LAS-VEGAS
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+
+[Install]
+WantedBy=default.target

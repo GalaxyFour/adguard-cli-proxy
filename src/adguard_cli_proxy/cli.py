@@ -23,6 +23,8 @@ from .endpoint import (
     is_wildcard,
     resolve_location,
 )
+from .gateway import GatewayConfig, GatewayError
+from .gateway import serve as serve_gateway
 from .instances import (
     InstanceError,
     instance_data_dir,
@@ -60,8 +62,9 @@ def _parser() -> argparse.ArgumentParser:
         prog="adguard-cli-proxy",
         description=(
             "Run and label a SOCKS5 proxy backed by AdGuard VPN CLI. "
-            "Endpoints use the form {ip}:{port}/{ISO}/{CITY-SLUG}, "
-            "for example 127.0.0.1:9111/US/LAS-VEGAS."
+            "Endpoints use the form {ip}:{port}/{ISO}/{CITY-SLUG}. "
+            "The optional gateway on port 9111 maps that form to backend "
+            "ports 9112-9222, for example 127.0.0.1:9111/US/LAS-VEGAS."
         ),
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
@@ -78,7 +81,9 @@ def _parser() -> argparse.ArgumentParser:
         default="127.0.0.1",
         help="SOCKS listen address (default: 127.0.0.1)",
     )
-    up.add_argument("--port", type=int, default=9111, help="SOCKS listen port (default: 9111)")
+    up.add_argument(
+        "--port", type=int, default=9112, help="SOCKS listen port (default: 9112)"
+    )
     up.add_argument(
         "--advertise",
         metavar="HOST",
@@ -162,6 +167,48 @@ def _parser() -> argparse.ArgumentParser:
         "--probe", action="store_true", help="probe the egress IP through the active proxy"
     )
     doctor.set_defaults(func=cmd_doctor)
+
+    gateway = subparsers.add_parser(
+        "gateway",
+        help="run the port 9111 location router and mapping API",
+        description=(
+            "Listen on one port and provision locations on backend ports "
+            "from a reserved range. SOCKS5 selects a location through the "
+            "username; HTTP selects it with X-AdGuard-Location or Basic auth; "
+            "GET /US/LAS-VEGAS returns the mapped endpoint."
+        ),
+    )
+    gateway.add_argument(
+        "--host", default="127.0.0.1", help="listen address (default: 127.0.0.1)"
+    )
+    gateway.add_argument(
+        "--port", type=int, default=9111, help="listen port (default: 9111)"
+    )
+    gateway.add_argument(
+        "--min-port",
+        type=int,
+        default=9112,
+        help="first backend port (default: 9112)",
+    )
+    gateway.add_argument(
+        "--max-port",
+        type=int,
+        default=9222,
+        help="last backend port (default: 9222)",
+    )
+    gateway.add_argument(
+        "--default-location",
+        default="US/LAS-VEGAS",
+        help="location used when a proxy request does not specify one",
+    )
+    gateway.add_argument(
+        "--startup-timeout",
+        type=float,
+        default=120,
+        metavar="SECONDS",
+        help="maximum time to provision one location (default: 120)",
+    )
+    gateway.set_defaults(func=cmd_gateway)
 
     return parser
 
@@ -682,12 +729,46 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     return 1 if failed else 0
 
 
+def cmd_gateway(args: argparse.Namespace) -> int:
+    if not is_loopback(args.host):
+        raise GatewayError(
+            "the gateway API is unauthenticated; bind it to a loopback address "
+            "and reach it through SSH, WireGuard, or a reverse proxy"
+        )
+    if not (1 <= args.port <= 65535):
+        raise GatewayError("--port must be between 1 and 65535")
+    if not (1 <= args.min_port <= 65535 and 1 <= args.max_port <= 65535):
+        raise GatewayError("--min-port and --max-port must be between 1 and 65535")
+    if args.min_port > args.max_port:
+        raise GatewayError("--min-port must be less than or equal to --max-port")
+    if args.min_port <= args.port <= args.max_port:
+        raise GatewayError("--port must be outside the backend port range")
+    if args.startup_timeout <= 0:
+        raise GatewayError("--startup-timeout must be greater than zero")
+
+    config = GatewayConfig(
+        host=args.host,
+        port=args.port,
+        min_port=args.min_port,
+        max_port=args.max_port,
+        default_location=args.default_location,
+        startup_timeout=args.startup_timeout,
+    )
+    try:
+        serve_gateway(config)
+    except OSError as exc:
+        raise GatewayError(
+            f"could not listen on {config.host}:{config.port}: {exc}"
+        ) from exc
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = _parser()
     args = parser.parse_args(argv)
     try:
         return int(args.func(args))
-    except (AdGuardError, LocationError, InstanceError) as exc:
+    except (AdGuardError, LocationError, InstanceError, GatewayError) as exc:
         _print_error(str(exc), as_json=getattr(args, "json", False))
         return 1
     except KeyboardInterrupt:
