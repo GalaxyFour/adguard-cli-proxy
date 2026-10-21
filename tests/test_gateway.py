@@ -148,6 +148,31 @@ class ConnectTests(unittest.TestCase):
             self.assertEqual(connect.call_count, 1)
 
 
+class PoolUrlTests(unittest.TestCase):
+    def test_pool_url_is_pathless_and_uses_username(self) -> None:
+        state = sample_state(9112)
+        gateway = Gateway(GatewayConfig(port=9111))
+        self.assertEqual(
+            gateway.pool_url(state), "http://US-LAS-VEGAS:x@127.0.0.1:9111"
+        )
+        self.assertEqual(
+            gateway.nine_router_pool(state),
+            {
+                "name": "AG/US/LAS-VEGAS",
+                "proxyUrl": "http://US-LAS-VEGAS:x@127.0.0.1:9111",
+                "noProxy": "",
+                "type": "http",
+            },
+        )
+
+    def test_pool_url_uses_loopback_for_wildcard_bind(self) -> None:
+        state = sample_state(9112)
+        gateway = Gateway(GatewayConfig(host="0.0.0.0", port=9111))
+        self.assertEqual(
+            gateway.pool_url(state), "http://US-LAS-VEGAS:x@127.0.0.1:9111"
+        )
+
+
 class PortTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
@@ -241,6 +266,46 @@ class GatewayRoutingTests(GatewayServerMixin, unittest.TestCase):
         self.assertIn(b"200 OK", response)
         self.assertEqual(
             response.split(b"\r\n\r\n", 1)[1].decode().strip(), state.endpoint
+        )
+
+    def test_api_9router_format(self) -> None:
+        state = sample_state(0)
+        server = self.start_gateway(state)
+        expected = (
+            f"http://US-LAS-VEGAS:x@127.0.0.1:{server.server_address[1]}\n"
+        )
+        with mock.patch.object(server.gateway, "ensure", return_value=state):
+            response = self.request(
+                b"GET /US/LAS-VEGAS?format=9router HTTP/1.1\r\n"
+                b"Host: localhost\r\n\r\n"
+            )
+        self.assertIn(b"200 OK", response)
+        self.assertEqual(response.split(b"\r\n\r\n", 1)[1].decode(), expected)
+
+    def test_api_9router_pools(self) -> None:
+        state = sample_state(0)
+        server = self.start_gateway(state)
+        with mock.patch.object(
+            server.gateway, "active_states", return_value=[state]
+        ):
+            response = self.request(
+                b"GET /_9router HTTP/1.1\r\nHost: localhost\r\n\r\n"
+            )
+        self.assertIn(b"200 OK", response)
+        payload = json.loads(response.split(b"\r\n\r\n", 1)[1])
+        self.assertEqual(
+            payload["pools"],
+            [
+                {
+                    "name": "AG/US/LAS-VEGAS",
+                    "proxyUrl": (
+                        f"http://US-LAS-VEGAS:x@127.0.0.1:"
+                        f"{server.server_address[1]}"
+                    ),
+                    "noProxy": "",
+                    "type": "http",
+                }
+            ],
         )
 
     def test_health(self) -> None:

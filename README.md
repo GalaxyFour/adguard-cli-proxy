@@ -15,7 +15,8 @@ SOCKS5 listener, verifies the egress IP, and prints a canonical endpoint label:
 
 The `/US/LAS-VEGAS` suffix is a location label. The actual proxy URL is the
 SOCKS5 address printed next to it (`socks5h://…`), because SOCKS URLs do not
-carry a path.
+carry a path. For clients that require a pathless HTTP proxy URL (for example
+9router), the gateway provides `http://US-LAS-VEGAS:x@127.0.0.1:9111`.
 
 The optional `gateway` command reserves port `9111` and automatically maps a
 location request to a backend in `9112-9222`:
@@ -52,6 +53,7 @@ workflow repeatable:
 | Public VPS | `203.0.113.10:9112/US/LAS-VEGAS` | `socks5h://adg:<password>@203.0.113.10:9112` |
 | LAN server | `192.168.1.20:9112/US/LAS-VEGAS` | `socks5h://adg:<password>@192.168.1.20:9112` |
 | Local gateway | `127.0.0.1:9111/US/LAS-VEGAS` | auto-mapped to a backend port |
+| 9router pool | `http://US-LAS-VEGAS:x@127.0.0.1:9111` | gateway (location in username) |
 
 For public binds, a random username/password is generated unless you pass
 `--username` and `--password`. AdGuard VPN CLI refuses to expose its SOCKS
@@ -133,6 +135,45 @@ mapped endpoint. The second returns only the endpoint label:
 
 Ports `9119` and `9120` are skipped automatically if they are already used by
 other services. The gateway never steals an occupied port.
+
+### 9router proxy pools
+
+9router builds an `undici.ProxyAgent` from each pool URL, and that client
+rejects proxy URLs containing a path. The mapping URL is therefore **not** a
+valid 9router proxy URL:
+
+```text
+http://127.0.0.1:9111/US/LAS-VEGAS   ← invalid proxy URL (path is rejected)
+```
+
+Use the gateway's pathless pool URL instead. The location is carried in the
+proxy username:
+
+| 9router pool name | Proxy URL |
+| --- | --- |
+| `AG/US/LAS-VEGAS` | `http://US-LAS-VEGAS:x@127.0.0.1:9111` |
+| `AG/ID/JAKARTA` | `http://ID-JAKARTA:x@127.0.0.1:9111` |
+
+The password (`x`) is ignored by the gateway. It only has to be non-empty
+because 9router's undici 7 `ProxyAgent` sends proxy credentials only when both
+the username and password are present. The username selects the location.
+
+Get the current pool list or one URL from the gateway:
+
+```bash
+curl http://127.0.0.1:9111/_9router
+curl 'http://127.0.0.1:9111/US/LAS-VEGAS?format=9router'
+# http://US-LAS-VEGAS:x@127.0.0.1:9111
+```
+
+In 9router, add a proxy pool with type `HTTP`, the URL above, and an empty
+`noProxy` unless you need destination exclusions. No path or header is needed.
+Enable `strictProxy` if you prefer requests to fail instead of falling back to
+a direct connection when the tunnel is down.
+
+9router also cannot use the direct `socks5h://127.0.0.1:9112` URLs: its
+`ProxyAgent` only accepts `http://` and `https://` proxy URLs. Route those
+locations through the `9111` gateway instead.
 
 ## Public / remote access
 
@@ -408,7 +449,8 @@ adguard-cli-proxy gateway [options]
 Mapping API:
 
 ```bash
-# JSON: location, instance, mapped_port, endpoint, proxy_url, egress_ip
+# JSON: location, instance, mapped_port, endpoint, proxy_url, pool_url,
+# egress_ip, healthy
 curl http://127.0.0.1:9111/US/LAS-VEGAS
 
 # Plain endpoint label
@@ -417,6 +459,13 @@ curl 'http://127.0.0.1:9111/US/LAS-VEGAS?format=text'
 
 # All active mappings
 curl http://127.0.0.1:9111/_instances
+
+# 9router-compatible pool URLs for all active locations
+curl http://127.0.0.1:9111/_9router
+
+# One pathless pool URL (also accepts format=pool)
+curl 'http://127.0.0.1:9111/US/LAS-VEGAS?format=9router'
+# http://US-LAS-VEGAS:x@127.0.0.1:9111
 
 # Stop a location
 curl -X DELETE http://127.0.0.1:9111/US/LAS-VEGAS
@@ -515,6 +564,9 @@ adguard-cli-proxy status --all --json \
   subscription's simultaneous-device/connection limit.
 - The `/US/LAS-VEGAS` endpoint is a human-readable label. Use the accompanying
   `socks5h://` URL in proxy clients. The gateway API returns the mapped URL.
+- Clients that reject paths in proxy URLs, such as 9router, must use the
+  gateway's pathless `pool_url` (`http://US-LAS-VEGAS:x@127.0.0.1:9111`)
+  instead of the `/US/LAS-VEGAS` mapping URL or a direct `socks5h://` URL.
 - The gateway API is loopback-only. Expose it through SSH, WireGuard, or a
   reverse proxy that adds authentication.
 - Ports `9111-9222` are reserved logically for this tool. Occupied ports,

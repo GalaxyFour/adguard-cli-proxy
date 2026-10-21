@@ -8,7 +8,13 @@
 #
 # Or let the gateway map a request to a backend in 9112-9222:
 #   curl http://127.0.0.1:9111/US/LAS-VEGAS
+#
+# 9router/undici pools reject paths, so use the gateway's pathless pool URLs:
+#   curl http://127.0.0.1:9111/_9router
+#   curl 'http://127.0.0.1:9111/US/LAS-VEGAS?format=9router'
 
 127.0.0.1:9112/US/LAS-VEGAS
 127.0.0.1:9113/ID/JAKARTA
 127.0.0.1:9111/US/LAS-VEGAS
+http://US-LAS-VEGAS:x@127.0.0.1:9111
+http://ID-JAKARTA:x@127.0.0.1:9111

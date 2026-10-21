@@ -7,6 +7,15 @@ The gateway accepts three kinds of traffic on one port:
   ``X-AdGuard-Location`` or the Basic proxy username;
 * an HTTP mapping API, ``GET /US/LAS-VEGAS``, which provisions the location on
   a free backend port in the configured range and returns the endpoint.
+
+The mapping API also exposes pathless HTTP proxy URLs for clients that reject
+paths in proxy URLs (for example 9router's undici ``ProxyAgent``)::
+
+    http://US-LAS-VEGAS:x@127.0.0.1:9111
+
+The location is carried in the proxy username, so no path or header is needed.
+The password is ignored; it only has to be non-empty because undici 7 only
+sends proxy credentials when both username and password are present.
 """
 
 from __future__ import annotations
@@ -23,7 +32,7 @@ import threading
 import time
 from dataclasses import dataclass
 from http import HTTPStatus
-from urllib.parse import parse_qs, unquote, urlsplit
+from urllib.parse import parse_qs, quote, unquote, urlsplit
 
 from .adguard import AdGuardCLI, AdGuardError, Location
 from .endpoint import LocationError, resolve_location
@@ -62,6 +71,9 @@ def instance_name(location: Location) -> str:
 class Gateway:
     def __init__(self, config: GatewayConfig) -> None:
         self.config = config
+        # The actual bound port can differ from config.port when tests ask for
+        # port 0. GatewayServer replaces this after binding.
+        self.port = config.port
         self._lock = threading.RLock()
         self._locations: list[Location] | None = None
 
@@ -263,6 +275,42 @@ class Gateway:
                     or f"Could not stop {name}"
                 )
 
+    def pool_url(self, state: State) -> str:
+        """Return a pathless HTTP proxy URL with the location in the username.
+
+        Clients such as 9router build an ``undici.ProxyAgent`` from the pool
+        URL and reject any URL with a path, so ``/US/LAS-VEGAS`` cannot be used
+        as a proxy URL. ``http://US-LAS-VEGAS:x@127.0.0.1:9111`` is accepted by
+        those clients and this gateway resolves the username to the location.
+
+        undici 7 only emits ``Proxy-Authorization`` when both the username and
+        password are non-empty, so the URL includes a dummy password ``x``.
+        The gateway ignores the password.
+        """
+        host = self.config.host
+        if host in {"", "0.0.0.0", "::"}:
+            host = "127.0.0.1"
+        if ":" in host and not host.startswith("["):
+            host = f"[{host}]"
+        username = quote(state.slug.replace("/", "-"), safe="-._~")
+        return f"http://{username}:x@{host}:{self.port}"
+
+    def nine_router_pool(self, state: State) -> dict[str, str]:
+        return {
+            "name": f"AG/{state.slug}",
+            "proxyUrl": self.pool_url(state),
+            "noProxy": "",
+            "type": "http",
+        }
+
+    def nine_router_payload(self) -> dict[str, object]:
+        return {
+            "gateway": f"{self.config.host}:{self.port}",
+            "pools": [
+                self.nine_router_pool(state) for state in self.active_states()
+            ],
+        }
+
     def payload(self, state: State) -> dict[str, object]:
         return {
             "location": state.slug,
@@ -270,6 +318,7 @@ class Gateway:
             "mapped_port": state.listen_port,
             "endpoint": state.endpoint,
             "proxy_url": state.proxy_url,
+            "pool_url": self.pool_url(state),
             "egress_ip": state.egress_ip,
             "healthy": state.healthy,
         }
@@ -664,6 +713,15 @@ class GatewayHandler(socketserver.BaseRequestHandler):
             )
             return
 
+        if path in {"_9router", "_pools"}:
+            payload = gateway.nine_router_payload()
+            self._respond(
+                200,
+                json.dumps(payload, indent=2).encode() + b"\n",
+                head_only=head_only,
+            )
+            return
+
         if path == "_instances":
             payload = [gateway.payload(state) for state in gateway.active_states()]
             self._respond(
@@ -679,8 +737,12 @@ class GatewayHandler(socketserver.BaseRequestHandler):
             return
 
         state = gateway.ensure(path)
-        if query.get("format", [""])[0] == "text":
+        output_format = query.get("format", [""])[0]
+        if output_format == "text":
             body = (state.endpoint + "\n").encode()
+            self._respond(200, body, "text/plain; charset=utf-8", head_only=head_only)
+        elif output_format in {"9router", "pool"}:
+            body = (gateway.pool_url(state) + "\n").encode()
             self._respond(200, body, "text/plain; charset=utf-8", head_only=head_only)
         else:
             body = json.dumps(gateway.payload(state), indent=2).encode() + b"\n"
@@ -694,6 +756,7 @@ class GatewayServer(socketserver.ThreadingTCPServer):
     def __init__(self, config: GatewayConfig) -> None:
         self.gateway = Gateway(config)
         super().__init__((config.host, config.port), GatewayHandler)
+        self.gateway.port = self.server_address[1]
 
     def handle_error(self, request: object, client_address: object) -> None:
         print(f"gateway: handler error for {client_address}", file=sys.stderr, flush=True)
