@@ -132,6 +132,118 @@ wildcard bind to advertise the LAN address instead:
 adguard-cli-proxy up US/LAS-VEGAS --host 0.0.0.0 --no-public-ip
 ```
 
+## Multiple locations at once
+
+AdGuard VPN CLI normally supports one active tunnel per data directory. This
+tool can run **one independent AdGuard daemon per named instance**, each with
+its own data directory, account session, SOCKS port, and state file.
+
+For example, run Las Vegas and Jakarta simultaneously:
+
+```bash
+adguard-cli-proxy up US/LAS-VEGAS --instance us-las-vegas --port 9111
+adguard-cli-proxy up ID/JAKARTA  --instance id-jakarta  --port 9112
+```
+
+```text
+Instance:  us-las-vegas
+Endpoint:  127.0.0.1:9111/US/LAS-VEGAS
+Proxy:     socks5h://127.0.0.1:9111
+
+Instance:  id-jakarta
+Endpoint:  127.0.0.1:9112/ID/JAKARTA
+Proxy:     socks5h://127.0.0.1:9112
+```
+
+Your application then uses:
+
+```bash
+curl --socks5-hostname 127.0.0.1:9111 https://api.ipify.org   # Las Vegas
+curl --socks5-hostname 127.0.0.1:9112 https://api.ipify.org   # Jakarta
+```
+
+Show all active instances:
+
+```bash
+adguard-cli-proxy status --all
+adguard-cli-proxy status --all --probe --json
+```
+
+How instances work:
+
+- `--instance NAME` uses
+  `~/.local/share/adguard-cli-proxy/instances/NAME` as AdGuard's
+  `AGVPN_CLI_DATA_PATH`.
+- On first use, the existing default AdGuard login session
+  (`adguardvpn-cli.conf`) is copied into the new instance directory. Use
+  `--no-copy-login` to opt out, or `--data-dir` to choose another directory.
+- Each instance launches its own AdGuard VPN daemon and SOCKS listener.
+- Stop one instance with `down --instance NAME`; other instances stay running.
+- Each simultaneous tunnel may count toward your AdGuard plan/device limit.
+  Check your subscription before running many instances.
+
+> The instance path is independent from the default `adguardvpn-cli` state.
+> Running `adguard-cli-proxy down` without `--instance` does not stop named
+> instances.
+
+## Autostart with systemd
+
+The repository includes `contrib/adguard-cli-proxy@.service`, a user-level
+systemd template that starts one instance per environment file.
+
+For a stable install that survives moving the source checkout:
+
+```bash
+python3 -m venv ~/.local/share/adguard-cli-proxy/venv
+~/.local/share/adguard-cli-proxy/venv/bin/pip install \
+  /path/to/adguard-cli-proxy
+mkdir -p ~/.local/bin
+ln -sf ~/.local/share/adguard-cli-proxy/venv/bin/adguard-cli-proxy \
+  ~/.local/bin/adguard-cli-proxy
+```
+
+Install the unit and create one environment file per location:
+
+```bash
+mkdir -p ~/.config/systemd/user ~/.config/adguard-cli-proxy/instances
+cp contrib/adguard-cli-proxy@.service ~/.config/systemd/user/
+
+cat > ~/.config/adguard-cli-proxy/instances/us-las-vegas.env <<'EOF'
+LOCATION=US/LAS-VEGAS
+HOST=127.0.0.1
+PORT=9111
+EOF
+
+cat > ~/.config/adguard-cli-proxy/instances/id-jakarta.env <<'EOF'
+LOCATION=ID/JAKARTA
+HOST=127.0.0.1
+PORT=9112
+EOF
+
+systemctl --user daemon-reload
+systemctl --user enable --now adguard-cli-proxy@us-las-vegas.service
+systemctl --user enable --now adguard-cli-proxy@id-jakarta.service
+```
+
+Check it:
+
+```bash
+systemctl --user status adguard-cli-proxy@us-las-vegas.service
+systemctl --user status adguard-cli-proxy@id-jakarta.service
+adguard-cli-proxy status --all --probe
+journalctl --user -u 'adguard-cli-proxy@*' -n 50
+```
+
+For boot without an interactive login, enable lingering once:
+
+```bash
+sudo loginctl enable-linger "$USER"
+```
+
+A system-wide unit is also available in
+[`contrib/adguard-cli-proxy.service`](contrib/adguard-cli-proxy.service) for a
+single instance. Edit `User=YOUR_USER` before installing it.
+
 ## Commands
 
 ### `up`
@@ -148,6 +260,9 @@ adguard-cli-proxy up LOCATION [options]
   --password PASS        Explicit SOCKS password
   --wait SECONDS         Tunnel wait timeout (default: 30)
   --skip-egress-check    Do not verify the public IP through the proxy
+  --instance NAME        Named daemon/data dir for simultaneous locations
+  --data-dir DIR         Override the AdGuard data dir for --instance
+  --no-copy-login        Do not seed a new instance from the default login
   --json                 Machine-readable output
 ```
 
@@ -157,21 +272,30 @@ Location resolution accepts:
 adguard-cli-proxy up US/LAS-VEGAS
 adguard-cli-proxy up "Las Vegas"
 adguard-cli-proxy up las-vegas
-adguard-cli-proxy up US              # fastest US city
+adguard-cli-proxy up US                # fastest US city
 adguard-cli-proxy up "United States/Las Vegas"
+adguard-cli-proxy up US/LAS-VEGAS --instance us-las-vegas --port 9111
+adguard-cli-proxy up ID/JAKARTA --instance id-jakarta --port 9112
 ```
 
 ### `down`
 
 Disconnects AdGuard VPN and removes the active endpoint state.
 
+```bash
+adguard-cli-proxy down
+adguard-cli-proxy down --instance us-las-vegas
+```
+
 ### `status`
 
 ```bash
 adguard-cli-proxy status
 adguard-cli-proxy status --json
-adguard-cli-proxy status --probe      # re-check egress IP through the proxy
-adguard-cli-proxy status --check      # exit 3 when disconnected
+adguard-cli-proxy status --probe          # re-check egress IP through the proxy
+adguard-cli-proxy status --check          # exit 3 when disconnected
+adguard-cli-proxy status --all            # every configured instance
+adguard-cli-proxy status --all --probe --json
 ```
 
 ### `list`
@@ -202,6 +326,7 @@ egress IP:
 ```bash
 adguard-cli-proxy doctor
 adguard-cli-proxy doctor --probe
+adguard-cli-proxy doctor --instance us-las-vegas --probe
 ```
 
 ## JSON output
@@ -215,6 +340,7 @@ adguard-cli-proxy up US/LAS-VEGAS --json
 ```json
 {
   "ok": true,
+  "instance": null,
   "location": {
     "iso": "US",
     "country": "United States",
@@ -239,41 +365,39 @@ PROXY=$(adguard-cli-proxy status --json | jq -r .proxy_url)
 curl --proxy "$PROXY" https://api.ipify.org
 ```
 
-## systemd
-
-Copy [`contrib/adguard-cli-proxy.service`](contrib/adguard-cli-proxy.service),
-replace `YOUR_USER`, then install it:
+`status --all --json` returns a list, one object per instance:
 
 ```bash
-sudo cp adguard-cli-proxy.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now adguard-cli-proxy
+adguard-cli-proxy status --all --json \
+  | jq -r '.[] | "\(.instance // "default")\t\(.proxy_url)"'
 ```
-
-The service runs `up US/LAS-VEGAS` on start and `down` on stop. Keep the listen
-host at `127.0.0.1` unless you have configured authentication and a firewall.
 
 ## How it works
 
 1. `adguardvpn-cli list-locations` is parsed into `(ISO, country, city)` records.
 2. The location query is resolved and formatted as `ISO/CITY-SLUG`.
-3. The CLI is switched to SOCKS mode and configured with the requested
+3. `--instance` selects a separate `AGVPN_CLI_DATA_PATH`, so each instance gets
+   its own AdGuard daemon, account session, SOCKS port, and state file.
+4. The CLI is switched to SOCKS mode and configured with the requested
    host/port, plus credentials when the bind is not loopback.
-4. `adguardvpn-cli connect` selects the city.
-5. The wrapper waits for the SOCKS listener to accept TCP connections.
-6. A SOCKS5 health check fetches the public IP through the proxy.
-7. The endpoint label and proxy URL are saved to the state file and printed.
+5. `adguardvpn-cli connect` selects the city.
+6. The wrapper waits for the SOCKS listener to accept TCP connections.
+7. A SOCKS5 health check fetches the public IP through the proxy.
+8. The endpoint label and proxy URL are saved to the state file and printed.
 
 ## Limitations
 
-- AdGuard VPN CLI can be connected to **one location at a time**. This tool
-  exposes one active endpoint; it is not a multi-location proxy pool.
+- AdGuard VPN CLI supports one active connection **per data directory**. Use
+  `--instance` to run independent locations in parallel; without it, only one
+  default endpoint is active.
+- Each instance is a separate daemon and may count toward your AdGuard
+  subscription's simultaneous-device/connection limit.
 - The `/US/LAS-VEGAS` endpoint is a human-readable label. Use the accompanying
   `socks5h://` URL in proxy clients.
 - AdGuard's SOCKS listener and subscription limits still apply.
 - Public IP detection can be wrong behind CGNAT, multiple NATs, or a
   load-balanced ingress. Use `--advertise` to override it.
-- The tool manages the user's AdGuard VPN CLI configuration (`SOCKS` mode,
+- The tool manages each instance's AdGuard VPN CLI configuration (`SOCKS` mode,
   host, port, credentials). It does not touch TUN routing rules while using
   SOCKS mode.
 

@@ -6,10 +6,17 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from adguard_cli_proxy.state import State, clear_state, load_state, save_state
+from adguard_cli_proxy.state import (
+    State,
+    clear_state,
+    list_instances,
+    load_state,
+    save_state,
+    state_path,
+)
 
 
-def sample_state() -> State:
+def sample_state(instance: str | None = None) -> State:
     return State(
         iso="US",
         country="United States",
@@ -24,6 +31,8 @@ def sample_state() -> State:
         password=None,
         egress_ip="185.242.5.198",
         connected_at="2026-10-21T00:00:00+00:00",
+        instance=instance,
+        data_dir=f"/tmp/{instance}" if instance else None,
     )
 
 
@@ -53,6 +62,17 @@ class StateTests(unittest.TestCase):
         root.mkdir(parents=True)
         (root / "state.json").write_text("{broken", encoding="utf-8")
         self.assertIsNone(load_state())
+
+    def test_instance_round_trip(self) -> None:
+        state = sample_state("us-las-vegas")
+        path = save_state(state)
+        self.assertEqual(path, state_path("us-las-vegas"))
+        self.assertEqual(load_state("us-las-vegas"), state)
+        self.assertEqual(list_instances(), ["us-las-vegas"])
+
+        clear_state("us-las-vegas")
+        self.assertIsNone(load_state("us-las-vegas"))
+        self.assertEqual(list_instances(), [])
 
 
 if __name__ == "__main__":

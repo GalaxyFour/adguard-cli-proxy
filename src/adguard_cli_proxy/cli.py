@@ -10,6 +10,7 @@ import sys
 import time
 from dataclasses import asdict
 from datetime import datetime, timezone
+from pathlib import Path
 
 from . import __version__
 from .adguard import AdGuardCLI, AdGuardError, Location
@@ -22,8 +23,36 @@ from .endpoint import (
     is_wildcard,
     resolve_location,
 )
+from .instances import (
+    InstanceError,
+    instance_data_dir,
+    resolve_data_dir,
+    seed_login,
+    validate_instance,
+)
 from .net import direct_public_ip, local_ipv4, probe_egress, probe_tcp
-from .state import State, clear_state, load_state, save_state, state_path
+from .state import (
+    State,
+    clear_state,
+    list_instances,
+    load_state,
+    save_state,
+    state_path,
+)
+
+
+def _add_instance_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--instance",
+        help=(
+            "named VPN instance with its own data directory and daemon; "
+            "required for simultaneous locations"
+        ),
+    )
+    parser.add_argument(
+        "--data-dir",
+        help="override the AdGuard data directory for --instance",
+    )
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -79,15 +108,26 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="do not verify the public IP through the proxy",
     )
+    up.add_argument(
+        "--no-copy-login",
+        action="store_true",
+        help="do not seed a new --instance data dir with the default AdGuard login",
+    )
+    _add_instance_arguments(up)
     up.add_argument("--json", action="store_true", help="print machine-readable JSON")
     up.set_defaults(func=cmd_up)
 
     down = subparsers.add_parser("down", help="disconnect and remove the active endpoint")
+    _add_instance_arguments(down)
     down.add_argument("--json", action="store_true", help="print machine-readable JSON")
     down.set_defaults(func=cmd_down)
 
     status = subparsers.add_parser("status", help="show the current proxy status")
+    _add_instance_arguments(status)
     status.add_argument("--json", action="store_true", help="print machine-readable JSON")
+    status.add_argument(
+        "--all", action="store_true", help="show every configured instance"
+    )
     status.add_argument(
         "--probe", action="store_true", help="probe the egress IP through the proxy"
     )
@@ -116,6 +156,7 @@ def _parser() -> argparse.ArgumentParser:
     doctor = subparsers.add_parser(
         "doctor", help="check the AdGuard VPN CLI, login, listener, and egress"
     )
+    _add_instance_arguments(doctor)
     doctor.add_argument("--json", action="store_true", help="print machine-readable JSON")
     doctor.add_argument(
         "--probe", action="store_true", help="probe the egress IP through the active proxy"
@@ -130,6 +171,34 @@ def _print_error(message: str, *, as_json: bool) -> None:
         print(json.dumps({"ok": False, "error": message}, indent=2))
     else:
         print(f"error: {message}", file=sys.stderr)
+
+
+def _resolve_instance(
+    args: argparse.Namespace,
+    *,
+    seed: bool = False,
+) -> tuple[str | None, Path | None]:
+    instance = getattr(args, "instance", None)
+    explicit = getattr(args, "data_dir", None)
+    if explicit and not instance:
+        raise AdGuardError("--data-dir requires --instance")
+
+    if not instance:
+        return None, None
+
+    name = validate_instance(instance)
+    data_dir = resolve_data_dir(name, explicit)
+
+    if seed:
+        data_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        if not getattr(args, "no_copy_login", False):
+            source = seed_login(data_dir)
+            if source:
+                print(
+                    f"Seeded AdGuard login for instance {name!r} from {source}",
+                    file=sys.stderr,
+                )
+    return name, data_dir
 
 
 def _auth_for(
@@ -207,7 +276,8 @@ def cmd_up(args: argparse.Namespace) -> int:
     if not 1 <= args.port <= 65535:
         raise AdGuardError("--port must be between 1 and 65535")
 
-    adguard = AdGuardCLI()
+    instance, data_dir = _resolve_instance(args, seed=True)
+    adguard = AdGuardCLI(data_dir=data_dir)
     locations = adguard.list_locations()
     location = resolve_location(locations, args.location)
     username, password = _auth_for(
@@ -269,6 +339,8 @@ def cmd_up(args: argparse.Namespace) -> int:
         password=password,
         egress_ip=egress_ip,
         connected_at=connected_at,
+        instance=instance,
+        data_dir=str(data_dir) if data_dir else None,
     )
     saved_to = save_state(state)
 
@@ -288,6 +360,7 @@ def cmd_up(args: argparse.Namespace) -> int:
     if args.json:
         payload = {
             "ok": True,
+            "instance": instance,
             "location": asdict(location),
             "slug": location.slug,
             "listen": f"{args.host}:{args.port}",
@@ -301,6 +374,8 @@ def cmd_up(args: argparse.Namespace) -> int:
         print(json.dumps(payload, indent=2))
         return 0
 
+    if instance:
+        print(f"Instance:  {instance}")
     print(f"Connected: {location.slug} ({location.label})")
     print(f"Listen:    {args.host}:{args.port}")
     print(f"Endpoint:  {endpoint}")
@@ -310,23 +385,45 @@ def cmd_up(args: argparse.Namespace) -> int:
 
 
 def cmd_down(args: argparse.Namespace) -> int:
-    adguard = AdGuardCLI()
+    instance, data_dir = _resolve_instance(args)
+    adguard = AdGuardCLI(data_dir=data_dir)
     output = adguard.disconnect()
-    clear_state()
+    clear_state(instance)
 
     if args.json:
-        print(json.dumps({"ok": True, "disconnected": True, "detail": output}, indent=2))
+        print(
+            json.dumps(
+                {
+                    "ok": True,
+                    "disconnected": True,
+                    "instance": instance,
+                    "detail": output,
+                },
+                indent=2,
+            )
+        )
     else:
-        print("Disconnected. Endpoint removed.")
+        label = f" instance {instance!r}" if instance else ""
+        print(f"Disconnected{label}. Endpoint removed.")
     return 0
 
 
-def cmd_status(args: argparse.Namespace) -> int:
-    adguard = AdGuardCLI()
-    status = adguard.status()
-    state = load_state()
+def _status_payload(
+    instance: str | None,
+    state: State | None,
+    *,
+    probe: bool,
+) -> dict[str, object]:
+    if state and state.data_dir:
+        data_dir: Path | None = Path(state.data_dir)
+    elif instance:
+        data_dir = instance_data_dir(instance)
+    else:
+        data_dir = None
+
+    status = AdGuardCLI(data_dir=data_dir).status()
     egress_ip = state.egress_ip if state else None
-    if args.probe and status.connected and state:
+    if probe and status.connected and state:
         egress_ip = probe_egress(
             connect_host(state.listen_host),
             state.listen_port,
@@ -334,40 +431,73 @@ def cmd_status(args: argparse.Namespace) -> int:
             password=state.password,
         )
 
-    stale = bool(state and status.connected is False)
+    stale = bool(state and not status.connected)
     healthy = bool(status.connected and state and egress_ip)
+    return {
+        "ok": True,
+        "instance": instance,
+        "connected": status.connected,
+        "stale_state": stale,
+        "location": status.location,
+        "mode": status.mode,
+        "listen": f"{status.host}:{status.port}" if status.connected else None,
+        "endpoint": state.endpoint if state else None,
+        "proxy_url": state.proxy_url if state else None,
+        "egress_ip": egress_ip,
+        "healthy": healthy,
+        "state_file": str(state_path(instance)) if state else None,
+    }
+
+
+def cmd_status(args: argparse.Namespace) -> int:
+    if args.all and args.instance:
+        raise AdGuardError("--all cannot be combined with --instance")
+
+    items: list[tuple[str | None, State | None]] = []
+    if args.all:
+        default_state = load_state()
+        if default_state:
+            items.append((None, default_state))
+        for name in list_instances():
+            items.append((name, load_state(name)))
+        if not items:
+            items.append((None, None))
+    elif args.instance:
+        instance, _ = _resolve_instance(args)
+        items.append((instance, load_state(instance)))
+    else:
+        items.append((None, load_state()))
+
+    payloads = [
+        _status_payload(instance, state, probe=args.probe)
+        for instance, state in items
+    ]
 
     if args.json:
-        payload = {
-            "ok": True,
-            "connected": status.connected,
-            "stale_state": stale,
-            "location": status.location,
-            "mode": status.mode,
-            "listen": f"{status.host}:{status.port}" if status.connected else None,
-            "endpoint": state.endpoint if state else None,
-            "proxy_url": state.proxy_url if state else None,
-            "egress_ip": egress_ip,
-            "healthy": healthy,
-            "state_file": str(state_path()) if state else None,
-        }
-        print(json.dumps(payload, indent=2))
+        print(json.dumps(payloads if args.all else payloads[0], indent=2))
     else:
-        print(f"status:   {'connected' if status.connected else 'disconnected'}")
-        if status.connected:
-            print(f"location: {status.location}")
-            print(f"listen:   {status.host}:{status.port}")
-        elif stale:
-            print("note:     active state is stale; run `adguard-cli-proxy down`")
-        if state:
-            if status.connected:
-                print(f"endpoint: {state.endpoint}")
-                print(f"proxy:    {state.proxy_url}")
-                print(f"egress:   {egress_ip or 'unverified'}")
-            else:
-                print(f"last:     {state.endpoint}")
+        multiple = len(payloads) > 1
+        for payload in payloads:
+            name = payload["instance"]
+            if multiple:
+                print(f"=== {name or 'default'} ===")
+            print(f"status:   {'connected' if payload['connected'] else 'disconnected'}")
+            if payload["connected"]:
+                print(f"location: {payload['location']}")
+                print(f"listen:   {payload['listen']}")
+            elif payload["stale_state"]:
+                print("note:     active state is stale; run `adguard-cli-proxy down`")
+            if payload["endpoint"]:
+                if payload["connected"]:
+                    print(f"endpoint: {payload['endpoint']}")
+                    print(f"proxy:    {payload['proxy_url']}")
+                    print(f"egress:   {payload['egress_ip'] or 'unverified'}")
+                else:
+                    print(f"last:     {payload['endpoint']}")
+            if multiple:
+                print()
 
-    if args.check and not status.connected:
+    if args.check and any(not item["connected"] for item in payloads):
         return 3
     return 0
 
@@ -443,8 +573,9 @@ def cmd_resolve(args: argparse.Namespace) -> int:
 
 
 def cmd_doctor(args: argparse.Namespace) -> int:
-    adguard = AdGuardCLI()
-    state = load_state()
+    instance, data_dir = _resolve_instance(args)
+    adguard = AdGuardCLI(data_dir=data_dir)
+    state = load_state(instance)
     checks: list[dict[str, object]] = []
     failed = False
 
@@ -537,8 +668,14 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             )
 
     if args.json:
-        print(json.dumps({"ok": not failed, "checks": checks}, indent=2))
+        print(
+            json.dumps(
+                {"ok": not failed, "instance": instance, "checks": checks}, indent=2
+            )
+        )
     else:
+        if instance:
+            print(f"=== {instance} ===")
         for check in checks:
             marker = {"ok": "OK", "warn": "WARN", "fail": "FAIL"}[str(check["status"])]
             print(f"[{marker:<4}] {check['name']!s:<14} {check['detail']}")
@@ -550,7 +687,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         return int(args.func(args))
-    except (AdGuardError, LocationError) as exc:
+    except (AdGuardError, LocationError, InstanceError) as exc:
         _print_error(str(exc), as_json=getattr(args, "json", False))
         return 1
     except KeyboardInterrupt:

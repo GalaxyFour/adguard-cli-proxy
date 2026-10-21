@@ -3,6 +3,8 @@
 #
 # The suffix is a location label. The proxy itself is SOCKS5 at {ip}:{port}.
 # Generate the real values with:
-#   adguard-cli-proxy up US/LAS-VEGAS
+#   adguard-cli-proxy up US/LAS-VEGAS --instance us-las-vegas --port 9111
+#   adguard-cli-proxy up ID/JAKARTA  --instance id-jakarta  --port 9112
 
 127.0.0.1:9111/US/LAS-VEGAS
+127.0.0.1:9112/ID/JAKARTA

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "adguard-cli-proxy"
-version = "0.1.0"
+version = "0.2.0"
 description = "Location-aware SOCKS5 proxy manager for the AdGuard VPN CLI"
 readme = "README.md"
 requires-python = ">=3.9"

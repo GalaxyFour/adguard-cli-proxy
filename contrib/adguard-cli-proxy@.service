@@ -1,0 +1,17 @@
+[Unit]
+Description=adguard-cli-proxy instance %i
+Documentation=https://github.com/GalaxyFour/adguard-cli-proxy
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+EnvironmentFile=%h/.config/adguard-cli-proxy/instances/%i.env
+ExecStart=%h/.local/bin/adguard-cli-proxy up ${LOCATION} --instance %i --host ${HOST} --port ${PORT}
+ExecStop=%h/.local/bin/adguard-cli-proxy down --instance %i
+TimeoutStartSec=120
+TimeoutStopSec=30
+
+[Install]
+WantedBy=default.target

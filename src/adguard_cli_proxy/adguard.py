@@ -8,6 +8,7 @@ import shutil
 import subprocess
 from collections.abc import Sequence
 from dataclasses import dataclass
+from pathlib import Path
 
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 LOCATION_RE = re.compile(
@@ -91,8 +92,13 @@ def parse_locations(output: str) -> list[Location]:
 
 
 class AdGuardCLI:
-    def __init__(self, binary: str | None = None) -> None:
+    def __init__(
+        self,
+        binary: str | None = None,
+        data_dir: str | Path | None = None,
+    ) -> None:
         self.binary = binary or os.environ.get("ADGUARD_CLI_PROXY_BIN", "adguardvpn-cli")
+        self.data_dir = Path(data_dir).expanduser() if data_dir else None
 
     def available(self) -> bool:
         return shutil.which(self.binary) is not None
@@ -113,6 +119,8 @@ class AdGuardCLI:
         env = os.environ.copy()
         env["NO_COLOR"] = "1"
         env.setdefault("TERM", "dumb")
+        if self.data_dir is not None:
+            env["AGVPN_CLI_DATA_PATH"] = str(self.data_dir)
 
         try:
             completed = subprocess.run(

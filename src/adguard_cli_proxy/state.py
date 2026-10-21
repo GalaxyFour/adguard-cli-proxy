@@ -1,4 +1,4 @@
-"""Persistent state for the active proxy endpoint."""
+"""Persistent state for active proxy endpoints."""
 
 from __future__ import annotations
 
@@ -7,6 +7,8 @@ import os
 import tempfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
+
+from .instances import validate_instance
 
 APP_NAME = "adguard-cli-proxy"
 
@@ -18,7 +20,9 @@ def config_dir() -> Path:
     return Path.home() / ".config" / APP_NAME
 
 
-def state_path() -> Path:
+def state_path(instance: str | None = None) -> Path:
+    if instance:
+        return config_dir() / "instances" / f"{validate_instance(instance)}.json"
     return config_dir() / "state.json"
 
 
@@ -37,6 +41,8 @@ class State:
     password: str | None
     egress_ip: str | None
     connected_at: str
+    instance: str | None = None
+    data_dir: str | None = None
 
     @property
     def healthy(self) -> bool:
@@ -44,7 +50,7 @@ class State:
 
 
 def save_state(state: State) -> Path:
-    path = state_path()
+    path = state_path(state.instance)
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     payload = json.dumps(asdict(state), indent=2, sort_keys=True) + "\n"
 
@@ -60,8 +66,8 @@ def save_state(state: State) -> Path:
     return path
 
 
-def load_state() -> State | None:
-    path = state_path()
+def load_state(instance: str | None = None) -> State | None:
+    path = state_path(instance)
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
         return State(**data)
@@ -69,8 +75,17 @@ def load_state() -> State | None:
         return None
 
 
-def clear_state() -> None:
+def clear_state(instance: str | None = None) -> None:
     try:
-        state_path().unlink()
+        state_path(instance).unlink()
     except FileNotFoundError:
         pass
+
+
+def list_instances() -> list[str]:
+    directory = config_dir() / "instances"
+    try:
+        paths = sorted(directory.glob("*.json"))
+    except OSError:
+        return []
+    return [path.stem for path in paths]
