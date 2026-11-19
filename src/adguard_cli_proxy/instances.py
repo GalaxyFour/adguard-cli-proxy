@@ -48,16 +48,25 @@ def resolve_data_dir(name: str, explicit: str | None = None) -> Path:
     return instance_data_dir(name)
 
 
-def seed_login(data_dir: Path, source: Path | None = None) -> Path | None:
-    """Copy an existing AdGuard login into a new instance data directory.
+def seed_login(
+    data_dir: Path,
+    source: Path | None = None,
+    *,
+    overwrite: bool = False,
+) -> Path | None:
+    """Copy an existing AdGuard login into an instance data directory.
 
     AdGuard VPN CLI stores its account session in ``adguardvpn-cli.conf``.
     A separate data directory gives each VPN connection its own daemon and
     SOCKS listener. Returns the source path when a copy was made.
+
+    With ``overwrite=True`` an existing instance config is replaced. This is
+    used to refresh an instance whose copied login has expired or was cleared,
+    without disturbing instances that are still logged in.
     """
     data_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     target = data_dir / "adguardvpn-cli.conf"
-    if target.exists():
+    if target.exists() and not overwrite:
         return None
 
     source = source or (default_data_dir() / "adguardvpn-cli.conf")

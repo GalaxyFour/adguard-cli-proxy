@@ -220,3 +220,6 @@ class AdGuardCLI:
 
     def license(self) -> str:
         return self._run(["license"], timeout=20, check=False)
+
+    def logged_in(self) -> bool:
+        return "logged in" in self.license().lower()

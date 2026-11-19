@@ -271,8 +271,10 @@ How instances work:
   `~/.local/share/adguard-cli-proxy/instances/NAME` as AdGuard's
   `AGVPN_CLI_DATA_PATH`.
 - On first use, the existing default AdGuard login session
-  (`adguardvpn-cli.conf`) is copied into the new instance directory. Use
-  `--no-copy-login` to opt out, or `--data-dir` to choose another directory.
+  (`adguardvpn-cli.conf`) is copied into the new instance directory. If an
+  instance later loses or expires its copied login, the next `up` refreshes it
+  from the default directory automatically. Use `--no-copy-login` to opt out,
+  or `--data-dir` to choose another directory.
 - Each instance launches its own AdGuard VPN daemon and SOCKS listener.
 - Stop one instance with `down --instance NAME`; other instances stay running.
 - Each simultaneous tunnel may count toward your AdGuard plan/device limit.

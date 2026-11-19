@@ -66,6 +66,10 @@ class InstancePathTests(unittest.TestCase):
         self.assertIsNone(seed_login(target, source))
         self.assertEqual(copied.read_text(encoding="utf-8"), "session")
 
+        self.assertEqual(seed_login(target, source, overwrite=True), source)
+        self.assertEqual(copied.read_text(encoding="utf-8"), "changed")
+        self.assertEqual(copied.stat().st_mode & 0o777, 0o600)
+
 
 if __name__ == "__main__":
     unittest.main()

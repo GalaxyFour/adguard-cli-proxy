@@ -245,6 +245,16 @@ def _resolve_instance(
                     f"Seeded AdGuard login for instance {name!r} from {source}",
                     file=sys.stderr,
                 )
+            elif not AdGuardCLI(data_dir=data_dir).logged_in():
+                # The instance kept an old config whose login was cleared or
+                # expired. Refresh it from the default data directory so
+                # systemd autostart recovers after a reboot.
+                source = seed_login(data_dir, overwrite=True)
+                if source:
+                    print(
+                        f"Refreshed AdGuard login for instance {name!r} from {source}",
+                        file=sys.stderr,
+                    )
     return name, data_dir
 
 
